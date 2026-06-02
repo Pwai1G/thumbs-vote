@@ -1,21 +1,20 @@
 import cv2
-from mediapipe import solutions
-from mediapipe.framework.formats import landmark_pb2
+import mediapipe as mp
 import numpy as np
 from collections import deque
 import time
 
 class ThumbsVoteApp:
     def __init__(self):
-        # MediaPipe initialization
-        self.hands = solutions.hands.Hands(
+        # MediaPipe initialization - use correct import for current version
+        self.mp_hands = mp.solutions.hands
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.hands = self.mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=1,
             min_detection_confidence=0.7,
             min_tracking_confidence=0.5
         )
-        self.drawing = solutions.drawing_utils
-        self.drawing_styles = solutions.drawing_styles
         
         # Webcam setup
         self.cap = cv2.VideoCapture(0)
@@ -69,50 +68,43 @@ class ThumbsVoteApp:
     
     def process_frame(self, frame):
         """Process single frame and detect gestures"""
-        h, w, c = frame.shape
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.hands.process(rgb_frame)
         
         gesture = None
         
-        if results.hand_landmarks:
-            for hand_landmarks in results.hand_landmarks:
-                # Draw hand landmarks
-                hand_landmarks_proto = landmark_pb2.NormalizedLandmarkList()
-                hand_landmarks_proto.landmark.extend([
-                    landmark_pb2.NormalizedLandmark(x=lm.x, y=lm.y, z=lm.z)
-                    for lm in hand_landmarks.landmark
-                ])
-                self.drawing.draw_landmarks(
-                    frame,
-                    hand_landmarks_proto,
-                    solutions.hands.HAND_CONNECTIONS,
-                    self.drawing_styles.get_default_hand_landmarks_style(),
-                    self.drawing_styles.get_default_hand_connections_style()
-                )
+        if results.multi_hand_landmarks:
+            hand_landmarks = results.multi_hand_landmarks[0].landmark
+            
+            # Draw hand landmarks
+            self.mp_drawing.draw_landmarks(
+                frame,
+                results.multi_hand_landmarks[0],
+                self.mp_hands.HAND_CONNECTIONS
+            )
+            
+            # Detect gesture
+            gesture = self.detect_thumbs_gesture(hand_landmarks)
+            
+            # Smooth gesture with history
+            if gesture:
+                self.gesture_history.append(gesture)
+                most_common = max(set(self.gesture_history), key=list(self.gesture_history).count)
                 
-                # Detect gesture
-                gesture = self.detect_thumbs_gesture(hand_landmarks.landmark)
-                
-                # Smooth gesture with history
-                if gesture:
-                    self.gesture_history.append(gesture)
-                    most_common = max(set(self.gesture_history), key=list(self.gesture_history).count)
+                if most_common and most_common != self.current_gesture:
+                    self.current_gesture = most_common
+                    current_time = time.time()
                     
-                    if most_common and most_common != self.current_gesture:
-                        self.current_gesture = most_common
-                        current_time = time.time()
-                        
-                        # Register vote if cooldown passed
-                        if current_time - self.last_vote_time > self.vote_cooldown:
-                            if most_common == "thumbs_up":
-                                self.votes["pass"] += 1
-                                self.last_vote_time = current_time
-                                print("✋ PASS voted!")
-                            elif most_common == "thumbs_down":
-                                self.votes["reject"] += 1
-                                self.last_vote_time = current_time
-                                print("👎 REJECT voted!")
+                    # Register vote if cooldown passed
+                    if current_time - self.last_vote_time > self.vote_cooldown:
+                        if most_common == "thumbs_up":
+                            self.votes["pass"] += 1
+                            self.last_vote_time = current_time
+                            print("✋ PASS voted!")
+                        elif most_common == "thumbs_down":
+                            self.votes["reject"] += 1
+                            self.last_vote_time = current_time
+                            print("👎 REJECT voted!")
         
         return frame, gesture
     
